@@ -18,97 +18,144 @@ const initWebSocket = (app: Express) => {
 		InterServerEvents,
 		SocketData
 	>(httpServer, {
+		serveClient: false, // don't serve the static socket.io client file at /socket.io/socket.io.js.
 		cors: {
 			origin: '*',
 		},
 	})
 	// this is a global variable that stores the room name in its key
-	// and the current room status in its value.
-	const rooms: Map<string, Object> = new Map()
+	// and the owners socket#id in its value
+	const rooms: Map<string, any> = new Map()
 	const mediaHandler = (roomName: string, socket: Socket, data: any) => {
 		// there is no ack but an emit, so that the other clients
-		// can recieve any event just by slistening. an ack would not be
+		// can recieve any event just by listening. an ack would not be
 		// suitable here.
-		// console.log('media_event', data)
+		// .to() doesnt send to sender, which is the thing preventing this from
+		// going infinite loop.
 		socket.to(roomName).emit('media_event', data)
+	}
+	const leaveAndDeleteRoom = (roomName: string, socket: Socket) => {
+		socket.leave(roomName)
+		rooms.delete(roomName)
 	}
 	io.on('connection', (socket) => {
 		console.log('a user connected')
 		socket.on('create_room', (roomInfo, ack) => {
-			const roomName = roomInfo.name
+			// if the socket id is connected to other rooms not including itself.
+			// then return.
+			if (io.of('/').adapter.sids.get(socket.id)!.size > 1) {
+				return ack({ success: false, data: 'Cannot connect to multiple rooms. Leave current room first.' })
+			}
+			const roomName = roomInfo.roomName
 			if (!rooms.has(roomName)) {
 				socket.join(roomName)
-				rooms.set(roomName, {})
+				rooms.set(roomName, {
+					id: socket.id,
+				})
 				ack({ success: true, data: 'Room created successfully.' })
 			} else {
-				return ack({ success: false, data: 'Room already exists.' })
+				ack({ success: false, data: 'Room already exists.' })
 			}
-			// socket.on('set_room_data', (data) => {
-			//     socket.to(roomName).emit('sync_room_data', data)
-			// })
-            /* 
-                this listen event is nested inside the create_room event so that
-                only the users that have joined the room can receive the event instead
-                of all the users.
-                DO not use this in join_room cuz it will trip an infinite loop.
-                No workaround around this yet. need a way to distinguish JS click and real click.
-             */
-			socket.on('media_event', (data) => {
-                console.log('media_event')
-                mediaHandler(roomName, socket, data)
-            })
-            const leaveAndDeleteRoom = () => {
-                console.log('room creator disconnected. deleting room.')
-                socket.leave(roomName)
-                rooms.delete(roomName)
-            }
-            socket.on('disconnect', leaveAndDeleteRoom)
-            socket.on('leave_room', (ack) => {
-                leaveAndDeleteRoom()
-                ack({ success: true, data: 'Room left and deleted successfully.' })
-            })
+			// also broadcast to any clients which are in the room. It is possible
+			// to have clients still connected if the owner leaves and deletes the room first.
+			mediaHandler(roomName, socket, roomInfo)
+
 		})
-		socket.on('join_room', (targetRoom, ack) => {
-            const roomName = targetRoom.name
-			if (!rooms.has(roomName)) {
-                return ack({ success: false, data: 'Room does not exist.' })
-			} else {
-                if (socket.rooms.has(roomName)) {
-                    return ack({ success: false, data: 'Room already connected.' })
-				}
-				socket.join(roomName)
-				ack({ success: true, data: 'Room joined successfully.' })
-				// then send the current status of room to the joinee ??
-				// socket.emit('sync_room_data', {})
+		/* 
+			this listen event is nested inside the create_room event so that
+			only the users that have joined the room can receive the event instead
+			of all the users.
+			DO not use this in join_room cuz it will trip an infinite loop.
+			Hence, cant implement sending events by anyone to everyone in room.
+			No workaround around this yet. need a way to distinguish JS click and real click.
+		*/
+		socket.on('media_event', (data) => {
+			// can either take the room name from the data or invert the rooms map
+			// and use the current socket id to get the room name.
+			// going with first option cuz `simple is better than complex`.
+			if (socket.id === rooms.get(data.roomName)?.id) {
+				mediaHandler(data.roomName, socket, data)
 			}
-            
-			socket.on('leave_room', (ack) => {
-				const roomName = targetRoom.name
-				if (!rooms.has(roomName)) {
-					return ack({ success: false, data: 'Room does not exist.' })
-				} else {
-					if (!socket.rooms.has(roomName)) {
-						return ack({ success: false, data: 'Room not connected.' })
-					}
-					socket.leave(roomName)
-					ack({ success: true, data: 'Room left successfully.' })
-					// socket.removeAllListeners('media_event')
-				}
-			})
 		})
 
-		// maybe keep this inside create_room
-		socket.on('room_stream_change', (roomInfo) => {
-			socket.to(roomInfo.name).emit('room_stream_change', roomInfo)
+		socket.on('room_stream_change', (newStreamData) => {
+			socket
+				.to(newStreamData.roomName)
+				.emit('room_stream_change', newStreamData)
 		})
+
+		socket.on('join_room', (targetRoom, ack) => {
+			if (io.of('/').adapter.sids.get(socket.id)!.size > 1) {
+				return ack({ success: false, data: 'Cannot connect to multiple rooms. Leave current room first.' })
+			}
+			const roomName = targetRoom.roomName
+			if (!rooms.has(roomName)) {
+				return ack({ success: false, data: 'Room does not exist.' })
+			} else {
+				if (socket.rooms.has(roomName)) {
+					return ack({ success: false, data: 'Room already connected.' })
+				}
+				socket.join(roomName)
+				let isOwner = false
+				if (socket.id === rooms.get(roomName)?.id) {
+					isOwner =  true
+				}
+				ack({ success: true, data: {isOwner: isOwner, message: 'Room joined successfully.'} })
+				/*
+				then, send the current status of room to the joinee.
+				But to do that, we need information from the room creator.
+				hence, emit an event only to the room creator.
+				In response to the event, the room creator will emit the media_event to the server,
+				which will emit the event to *all* the joinee.
+				*/
+				io.to(rooms.get(roomName).id).emit('sync_room_data', {})
+			}
+		})
+
 		socket.on('list_rooms', (ack) => {
+			console.log(socket.id)
+			console.log(rooms)
 			const roomNames = Array.from(rooms.keys())
 			ack({
 				success: true,
 				data: roomNames,
 			})
 		})
-		
+
+		socket.on('leave_room', (roomInfo, ack) => {
+			const roomName = roomInfo.roomName
+			if (!rooms.has(roomName)) {
+				return ack({
+					success: false,
+					data: { message: 'Room does not exist.' },
+				})
+			}
+			if (!socket.rooms.has(roomName)) {
+				return ack({ success: false, data: { message: 'Room not connected.' } })
+			}
+			socket.leave(roomName)
+			// differentiate betn owner leaving and joinee leaving, to remove
+			// appropriate client side event listeners.
+			let isOwner = false
+			if (socket.id === rooms.get(roomName)?.id) {
+				isOwner =  true
+			}
+			ack({
+				success: true,
+				data: { isOwner: isOwner, message: 'Room left successfully.' },
+			})
+		})
+
+		socket.on('disconnect', () => {
+			console.log('room creator disconnected. deleting room.')
+			// since, we dont get any data from client, use socket.id
+			for (const [roomName, roomInfo] of rooms) {
+				if (roomInfo.id === socket.id) {
+					leaveAndDeleteRoom(roomName, socket)
+					// dont break; in the case(possible?) of multiple rooms with same owner
+				}
+			}
+		})
 	})
 	return httpServer
 }
