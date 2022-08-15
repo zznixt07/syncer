@@ -1,1 +1,1 @@
-web: npm run prd
+web: npm run heroku_prd
