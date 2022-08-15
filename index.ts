@@ -7,7 +7,7 @@ import {
 	ServerToClientEvents,
 	SocketData,
 } from 'typings/socketio'
-import 'dotenv/config' 
+import 'dotenv/config'
 
 const app = express()
 
@@ -87,9 +87,7 @@ const initWebSocket = (app: Express) => {
 
 		socket.on('stream_change', (newStreamData) => {
 			if (socket.id === rooms.get(newStreamData.roomName)?.id) {
-				socket
-					.to(newStreamData.roomName)
-					.emit('stream_change', newStreamData)
+				socket.to(newStreamData.roomName).emit('stream_change', newStreamData)
 			}
 		})
 
@@ -97,15 +95,24 @@ const initWebSocket = (app: Express) => {
 			if (io.of('/').adapter.sids.get(socket.id)!.size > 1) {
 				return ack({
 					success: false,
-					data: 'Cannot connect to multiple rooms. Leave current room first.',
+					data: {
+						message:
+							'Cannot connect to multiple rooms. Leave current room first.',
+					},
 				})
 			}
 			const roomName = targetRoom.roomName
 			if (!rooms.has(roomName)) {
-				return ack({ success: false, data: 'Room does not exist.' })
+				return ack({
+					success: false,
+					data: { message: 'Room does not exist.' },
+				})
 			} else {
 				if (socket.rooms.has(roomName)) {
-					return ack({ success: false, data: 'Room already connected.' })
+					return ack({
+						success: false,
+						data: { message: 'Room already connected.' },
+					})
 				}
 				socket.join(roomName)
 				let isOwner = false
@@ -134,7 +141,7 @@ const initWebSocket = (app: Express) => {
 					.emit('stream_location', data)
 			}
 		}) */
-		
+
 		socket.on('sync_room_data', (data) => {
 			const roomName = data.roomName
 			if (!rooms.has(roomName)) {
