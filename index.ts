@@ -38,28 +38,34 @@ const initWebSocket = (app: Express) => {
 		socket.leave(roomName)
 		rooms.delete(roomName)
 	}
+
+	const requestMediaEvent = (ownerSocketId: string) => {
+		io.to(ownerSocketId).emit('sync_room_data', {})
+	}
 	io.on('connection', (socket) => {
 		console.log('a user connected')
 		socket.on('create_room', (roomInfo, ack) => {
 			// if the socket id is connected to other rooms not including itself.
 			// then return.
 			if (io.of('/').adapter.sids.get(socket.id)!.size > 1) {
-				return ack({ success: false, data: 'Cannot connect to multiple rooms. Leave current room first.' })
+				return ack({
+					success: false,
+					data: 'Cannot connect to multiple rooms. Leave current room first.',
+				})
 			}
 			const roomName = roomInfo.roomName
-			if (!rooms.has(roomName)) {
+			if (rooms.has(roomName)) {
+				return ack({ success: false, data: 'Room already exists.' })
+			} else {
 				socket.join(roomName)
 				rooms.set(roomName, {
 					id: socket.id,
 				})
 				ack({ success: true, data: 'Room created successfully.' })
-			} else {
-				ack({ success: false, data: 'Room already exists.' })
 			}
 			// also broadcast to any clients which are in the room. It is possible
 			// to have clients still connected if the owner leaves and deletes the room first.
 			mediaHandler(roomName, socket, roomInfo)
-
 		})
 		/* 
 			this listen event is nested inside the create_room event so that
@@ -78,15 +84,20 @@ const initWebSocket = (app: Express) => {
 			}
 		})
 
-		socket.on('room_stream_change', (newStreamData) => {
-			socket
-				.to(newStreamData.roomName)
-				.emit('room_stream_change', newStreamData)
+		socket.on('stream_change', (newStreamData) => {
+			if (socket.id === rooms.get(newStreamData.roomName)?.id) {
+				socket
+					.to(newStreamData.roomName)
+					.emit('stream_change', newStreamData)
+			}
 		})
 
 		socket.on('join_room', (targetRoom, ack) => {
 			if (io.of('/').adapter.sids.get(socket.id)!.size > 1) {
-				return ack({ success: false, data: 'Cannot connect to multiple rooms. Leave current room first.' })
+				return ack({
+					success: false,
+					data: 'Cannot connect to multiple rooms. Leave current room first.',
+				})
 			}
 			const roomName = targetRoom.roomName
 			if (!rooms.has(roomName)) {
@@ -98,9 +109,12 @@ const initWebSocket = (app: Express) => {
 				socket.join(roomName)
 				let isOwner = false
 				if (socket.id === rooms.get(roomName)?.id) {
-					isOwner =  true
+					isOwner = true
 				}
-				ack({ success: true, data: {isOwner: isOwner, message: 'Room joined successfully.'} })
+				ack({
+					success: true,
+					data: { isOwner: isOwner, message: 'Room joined successfully.' },
+				})
 				/*
 				then, send the current status of room to the joinee.
 				But to do that, we need information from the room creator.
@@ -108,13 +122,33 @@ const initWebSocket = (app: Express) => {
 				In response to the event, the room creator will emit the media_event to the server,
 				which will emit the event to *all* the joinee.
 				*/
-				io.to(rooms.get(roomName).id).emit('sync_room_data', {})
+				requestMediaEvent(rooms.get(roomName).id)
 			}
 		})
 
+		/* socket.on('stream_location', (data) => {
+			if (socket.id === rooms.get(data.roomName)?.id) {
+				socket
+					.to(data.roomName)
+					.emit('stream_location', data)
+			}
+		}) */
+		
+		socket.on('sync_room_data', (data) => {
+			const roomName = data.roomName
+			if (!rooms.has(roomName)) {
+				console.log('room does not exist')
+				return
+			}
+			// if (socket.rooms.has(roomName)) {
+			// 	console.log('room is not connected to')
+			// 	return
+			// }
+			const room = rooms.get(roomName)
+			requestMediaEvent(room.id)
+		})
+
 		socket.on('list_rooms', (ack) => {
-			console.log(socket.id)
-			console.log(rooms)
 			const roomNames = Array.from(rooms.keys())
 			ack({
 				success: true,
@@ -138,7 +172,7 @@ const initWebSocket = (app: Express) => {
 			// appropriate client side event listeners.
 			let isOwner = false
 			if (socket.id === rooms.get(roomName)?.id) {
-				isOwner =  true
+				isOwner = true
 			}
 			ack({
 				success: true,

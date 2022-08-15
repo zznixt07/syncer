@@ -16,9 +16,10 @@ export interface ServerToClientEvents {
 	basicEmit: (a: number, b: string, c: Buffer) => void
 	withAck: (d: string, callback: (e: number) => void) => void
 	list_rooms: (a: (msg: TResult) => void) => void
-	room_stream_change: (data: any) => void
+	stream_change: (data: any) => void
 	media_event: (data: any) => void
 	sync_room_data: (data: any) => void
+	// stream_location: (ack: (data: TResult) => void) => void
 }
 
 export interface ClientToServerEvents {
@@ -27,7 +28,9 @@ export interface ClientToServerEvents {
 	join_room: (data: IRoomInfo, ack: (msg: TResult) => void) => void
 	leave_room: (data: IRoomInfo, ack: (msg: TResult) => void) => void
 	media_event: (data: IRoomAndData) => void
-	room_stream_change: (data: IRoomAndData) => void
+	stream_change: (data: IRoomAndData) => void
+	sync_room_data: (data: IRoomInfo) => void
+	// stream_location: (data: IRoomAndData) => void
 }
 
 export interface InterServerEvents {
