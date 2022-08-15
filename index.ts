@@ -7,6 +7,7 @@ import {
 	ServerToClientEvents,
 	SocketData,
 } from 'typings/socketio'
+import 'dotenv/config' 
 
 const app = express()
 
