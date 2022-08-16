@@ -51,18 +51,18 @@ const initWebSocket = (app: Express) => {
 			if (io.of('/').adapter.sids.get(socket.id)!.size > 1) {
 				return ack({
 					success: false,
-					data: 'Cannot connect to multiple rooms. Leave current room first.',
+					data: {message: 'Leave current room first.'},
 				})
 			}
 			const roomName = roomInfo.roomName
 			if (rooms.has(roomName)) {
-				return ack({ success: false, data: 'Room already exists.' })
+				return ack({ success: false, data: {message: 'Room already exists.'} })
 			} else {
 				socket.join(roomName)
 				rooms.set(roomName, {
 					id: socket.id,
 				})
-				ack({ success: true, data: 'Room created successfully.' })
+				ack({ success: true, data: {message: 'Room created successfully.'} })
 			}
 			// also broadcast to any clients which are in the room. It is possible
 			// to have clients still connected if the owner leaves and deletes the room first.
@@ -97,7 +97,7 @@ const initWebSocket = (app: Express) => {
 					success: false,
 					data: {
 						message:
-							'Cannot connect to multiple rooms. Leave current room first.',
+							'Leave current room first.',
 					},
 				})
 			}
@@ -160,7 +160,7 @@ const initWebSocket = (app: Express) => {
 			const roomNames = Array.from(rooms.keys())
 			ack({
 				success: true,
-				data: roomNames,
+				data: {rooms: roomNames},
 			})
 		})
 
