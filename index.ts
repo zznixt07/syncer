@@ -66,6 +66,7 @@ const initWebSocket = (app: Express) => {
 					id: socket.id,
 				})
 				ack({ success: true, data: {message: 'Room created successfully.'} })
+				console.log('Room created successfully with id', socket.id)
 			}
 			// also broadcast to any clients which are in the room. It is possible
 			// to have clients still connected if the owner leaves and deletes the room first.
@@ -182,12 +183,15 @@ const initWebSocket = (app: Express) => {
 			// differentiate betn owner leaving and joinee leaving, to remove
 			// appropriate client side event listeners.
 			let isOwner = false
+			let message = 'Room left successfully.'
 			if (socket.id === rooms.get(roomName)?.id) {
 				isOwner = true
+				// do not delete room as owner may want to rejoin and still have owner previlages.
+				// i think socket.io automatically handles this.
 			}
 			ack({
 				success: true,
-				data: { isOwner: isOwner, message: 'Room left successfully.' },
+				data: { isOwner: isOwner, message: message },
 			})
 		})
 
