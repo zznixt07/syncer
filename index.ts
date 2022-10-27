@@ -58,6 +58,9 @@ const initWebSocket = (app: Express) => {
 			if (rooms.has(roomName)) {
 				return ack({ success: false, data: {message: 'Room already exists.'} })
 			} else {
+				if (roomName.length === 0) {
+					return ack({success: false, data: {message: 'Room name must at least be 1 characters long.'}})
+				}
 				socket.join(roomName)
 				rooms.set(roomName, {
 					id: socket.id,
