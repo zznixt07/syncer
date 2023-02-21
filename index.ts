@@ -69,7 +69,7 @@ const initWebSocket = (app: Express) => {
 				console.log('Room created successfully with id', socket.id)
 			}
 			// also broadcast to any clients which are in the room. It is possible
-			// to have clients still connected if the owner leaves and deletes the room first.
+			// to have clients still connected if the owner leaves a room.
 			mediaHandler(roomName, socket, roomInfo)
 		})
 		/* 
