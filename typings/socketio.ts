@@ -23,7 +23,7 @@ export interface ServerToClientEvents {
 }
 
 export interface ClientToServerEvents {
-	time_sync: (ack: (msg: {serverTime: number}) => void) => void
+	time_sync: (data: Record<any, any>, ack: (msg: {serverTime: number}) => void) => void
 	list_rooms: (ack: (msg: TResult) => void) => void
 	create_room: (data: IRoomAndData, ack: (msg: TResult) => void) => void
 	join_room: (data: IRoomInfo, ack: (msg: TResult) => void) => void
