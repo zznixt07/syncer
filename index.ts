@@ -48,8 +48,6 @@ const initWebSocket = (app: Express) => {
 
 		socket.on('time_sync', (_, ack) => {
 			const serverTime = Date.now()
-			console.log(_)
-			console.log(ack)
 			ack({ serverTime: serverTime }) 
 		})
 		socket.on('create_room', (roomInfo, ack) => {
