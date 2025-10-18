@@ -49,7 +49,7 @@ const initWebSocket = (app: Express) => {
 		socket.on('time_sync', (ack) => {
 			// payload optional { clientSendTime }
 			const serverTime = Date.now()
-			if (typeof ack === 'function') ack({ serverTime: serverTime })
+			ack({ serverTime: serverTime })
 		})
 		socket.on('create_room', (roomInfo, ack) => {
 			// if the socket id is connected to other rooms not including itself.
