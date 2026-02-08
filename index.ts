@@ -18,7 +18,7 @@ interface RoomInfo {
 	disconnectedAt: number | null
 }
 
-const ONE_DAY_MS = 24 * 60 * 60 * 1000
+const MAX_ROOM_AGE_MS = 86400 * 3 * 1000
 
 const app = express()
 
@@ -289,7 +289,7 @@ const initWebSocket = (app: Express) => {
 		for (const [roomName, roomInfo] of rooms) {
 			if (
 				roomInfo.disconnectedAt &&
-				now - roomInfo.disconnectedAt > ONE_DAY_MS
+				now - roomInfo.disconnectedAt > MAX_ROOM_AGE_MS
 			) {
 				rooms.delete(roomName)
 				console.log(`Deleted stale room: ${roomName}`)
