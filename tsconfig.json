@@ -6,6 +6,7 @@
       "baseUrl": ".",
       "paths": {
       },
+      "sourceMap": true,
       "outDir": "dist",
       "forceConsistentCasingInFileNames": true,
       "strict": true,

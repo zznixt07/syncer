@@ -3,12 +3,27 @@ type TResult = {
 	success: boolean
 	data: any
 }
+
 interface IRoomInfo {
 	roomName: string
 }
 
-interface IRoomAndData extends IRoomInfo {
+export interface IRoomAndData extends IRoomInfo {
 	data: Record<string, any>
+}
+
+// Used for create_room to support reclamation with ownerToken
+interface ICreateRoomData extends IRoomInfo {
+	data?: {
+		ownerToken?: string
+		[key: string]: any
+	}
+}
+
+export interface IJoinRoomData extends IRoomInfo {
+	data: {
+		ownerToken?: string
+	}
 }
 
 export interface ServerToClientEvents {
@@ -25,8 +40,8 @@ export interface ServerToClientEvents {
 export interface ClientToServerEvents {
 	time_sync: (data: Record<any, any>, ack: (msg: {serverTime: number}) => void) => void
 	list_rooms: (ack: (msg: TResult) => void) => void
-	create_room: (data: IRoomAndData, ack: (msg: TResult) => void) => void
-	join_room: (data: IRoomInfo, ack: (msg: TResult) => void) => void
+	create_room: (data: ICreateRoomData, ack: (msg: TResult) => void) => void
+	join_room: (data: IJoinRoomData, ack: (msg: TResult) => void) => void
 	leave_room: (data: IRoomInfo, ack: (msg: TResult) => void) => void
 	media_event: (data: IRoomAndData) => void
 	stream_change: (data: IRoomAndData) => void
