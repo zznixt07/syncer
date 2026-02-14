@@ -11,8 +11,8 @@ import {
 	SocketData,
 } from 'typings/socketio'
 import 'dotenv/config'
-import path from 'path'
-import fs from 'fs'
+// import path from 'path'
+// import fs from 'fs'
 
 interface RoomInfo {
 	id: string | null // null when owner disconnected
@@ -20,10 +20,10 @@ interface RoomInfo {
 	disconnectedAt: number | null
 }
 
-const packageJsonPath = path.join(__dirname, 'package.json')
-const packageJson = fs.readFileSync(packageJsonPath, 'utf8')
-const packageJsonData = JSON.parse(packageJson)
-console.log(`version: ${packageJsonData.version}`)
+// const packageJsonPath = path.join(__dirname, 'package.json')
+// const packageJson = fs.readFileSync(packageJsonPath, 'utf8')
+// const packageJsonData = JSON.parse(packageJson)
+// console.log(`version: ${packageJsonData.version}`)
 
 const MAX_ROOM_AGE_MS = 86400 * 3 * 1000
 
