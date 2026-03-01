@@ -47,7 +47,7 @@ const initWebSocket = (app: Express) => {
 	const rooms: Map<string, RoomInfo> = new Map()
 	const mediaHandler = (roomName: string, socket: Socket, data: IRoomAndData) => {
 		// there is no ack but an emit, so that the other clients
-		// can recieve any event just by listening. an ack would not be
+		// can receive any event just by listening. an ack would not be
 		// suitable here.
 		// .to() doesnt send to sender, which is the thing preventing this from
 		// going infinite loop.
@@ -187,7 +187,10 @@ const initWebSocket = (app: Express) => {
 						})
 						console.log('Room reclaimed successfully with id', socket.id)
 						// Broadcast to any clients still in the room
-						mediaHandler(roomName, socket, targetRoom)
+						if (ownerId) {
+							requestMediaEvent(ownerId)
+						}
+						
 						return
 					}
 				}
