@@ -34,6 +34,7 @@ export interface ServerToClientEvents {
 	stream_change: (data: any) => void
 	media_event: (data: any) => void
 	sync_room_data: (data: any) => void
+	room_user_count: (data: { roomName: string; userCount: number }) => void
 	// stream_location: (ack: (data: TResult) => void) => void
 }
 

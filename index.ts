@@ -45,6 +45,15 @@ const initWebSocket = (app: Express) => {
 	// this is a global variable that stores the room name in its key
 	// and the room info (owner socket id, token, disconnection time) in its value
 	const rooms: Map<string, RoomInfo> = new Map()
+	const getRoomUserCount = (roomName: string) => {
+		return io.of('/').adapter.rooms.get(roomName)?.size ?? 0
+	}
+	const notifyRoomUserCount = (roomName: string) => {
+		io.to(roomName).emit('room_user_count', {
+			roomName,
+			userCount: getRoomUserCount(roomName),
+		})
+	}
 	const mediaHandler = (roomName: string, socket: Socket, data: IRoomAndData) => {
 		// there is no ack but an emit, so that the other clients
 		// can receive any event just by listening. an ack would not be
@@ -101,9 +110,14 @@ const initWebSocket = (app: Express) => {
 			})
 			ack({
 				success: true,
-				data: { message: 'Room created successfully.', ownerToken: newToken },
+				data: {
+					message: 'Room created successfully.',
+					ownerToken: newToken,
+					userCount: getRoomUserCount(roomName),
+				},
 			})
 			console.log('Room created successfully with id', socket.id)
+			notifyRoomUserCount(roomName)
 			
 			// also broadcast to any clients which are in the room. It is possible
 			// to have clients still connected if the owner leaves a room.
@@ -183,9 +197,11 @@ const initWebSocket = (app: Express) => {
 							data: {
 								message: 'Room reclaimed.',
 								isOwner: true,
+								userCount: getRoomUserCount(roomName),
 							},
 						})
 						console.log('Room reclaimed successfully with id', socket.id)
+						notifyRoomUserCount(roomName)
 						// Broadcast to any clients still in the room
 						if (ownerId) {
 							requestMediaEvent(ownerId)
@@ -202,8 +218,13 @@ const initWebSocket = (app: Express) => {
 				}
 				ack({
 					success: true,
-					data: { isOwner: isOwner, message: 'Room joined successfully.' },
+					data: {
+						isOwner: isOwner,
+						message: 'Room joined successfully.',
+						userCount: getRoomUserCount(roomName),
+					},
 				})
+				notifyRoomUserCount(roomName)
 				/*
 				then, send the current status of room to the joinee.
 				But to do that, we need information from the room creator.
@@ -243,9 +264,16 @@ const initWebSocket = (app: Express) => {
 
 		socket.on('list_rooms', (ack) => {
 			const roomNames = Array.from(rooms.keys())
+			const roomsWithUserCounts = roomNames.map((roomName) => ({
+				roomName,
+				userCount: getRoomUserCount(roomName),
+				// authoritative: the client can't tell this from a stored token,
+				// since tokens outlive the rooms they were minted for.
+				isOwner: rooms.get(roomName)?.id === socket.id,
+			}))
 			ack({
 				success: true,
-				data: { rooms: roomNames },
+				data: { rooms: roomNames, roomUserCounts: roomsWithUserCounts },
 			})
 		})
 
@@ -271,13 +299,18 @@ const initWebSocket = (app: Express) => {
 				// do not delete room as owner may want to rejoin and still have owner previlages.
 				// i think socket.io automatically handles this.
 			}
+			const userCount = getRoomUserCount(roomName)
 			ack({
 				success: true,
-				data: { isOwner: isOwner, message: message },
+				data: { isOwner: isOwner, message: message, userCount: userCount },
 			})
+			notifyRoomUserCount(roomName)
 		})
 
-		socket.on('disconnect', () => {
+		socket.on('disconnecting', () => {
+			const connectedRoomNames = Array.from(socket.rooms).filter(
+				(roomName) => roomName !== socket.id && rooms.has(roomName)
+			)
 			// Mark rooms as orphaned instead of deleting immediately
 			// This allows the owner to reclaim the room within the timeout period
 			for (const [roomName, roomInfo] of rooms) {
@@ -290,6 +323,9 @@ const initWebSocket = (app: Express) => {
 					// dont break; in the case(possible?) of multiple rooms with same owner
 				}
 			}
+			setTimeout(() => {
+				connectedRoomNames.forEach(notifyRoomUserCount)
+			}, 0)
 		})
 	})
 
