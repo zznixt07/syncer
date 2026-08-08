@@ -35,20 +35,9 @@ export interface PlaybackEnvelopeV2 {
 		muted?: boolean
 	}
 	capabilities: PlaybackCapabilities
-	// Legacy fields stay flat so clients older than protocol v2 keep working.
-	timestamp?: number
-	tms?: number
-	mediaState?: PlaybackStateName
-	playbackRate?: number
-	url?: string
-	[key: string]: unknown
 }
 
-export type PlaybackPayload = Record<string, unknown> & {
-	version?: number
-	sequence?: number
-	capturedAtMs?: number
-}
+export type PlaybackPayload = PlaybackEnvelopeV2
 
 export type TResult = {
 	success: boolean

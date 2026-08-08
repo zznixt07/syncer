@@ -44,17 +44,30 @@ export interface SyncServer {
 	rooms: Map<string, RoomInfo>
 }
 
-const decoratePayload = (room: RoomInfo, payload: PlaybackPayload) => {
+const PLAYBACK_STATES = new Set(['play', 'pause', 'buffer', 'ended'])
+const PLATFORMS = new Set(['desktop', 'android', 'ios'])
+const ADAPTERS = new Set(['html', 'media-session', 'youtube', 'spotify'])
+
+export const isPlaybackEnvelopeV2 = (payload: unknown): payload is PlaybackPayload => {
+	if (!payload || typeof payload !== 'object') return false
+	const data = payload as Record<string, any>
+	const capabilities = data.capabilities
+	return data.version === 2 &&
+		Number.isFinite(data.capturedAtMs) &&
+		data.source && PLATFORMS.has(data.source.platform) && ADAPTERS.has(data.source.adapter) &&
+		data.media && typeof data.media.isLive === 'boolean' &&
+		data.playback && PLAYBACK_STATES.has(data.playback.state) &&
+		Number.isFinite(data.playback.positionMs) && Number.isFinite(data.playback.rate) &&
+		capabilities &&
+		['canPlay', 'canPause', 'canSeek', 'canSetRate', 'canLoadMedia']
+			.every((key) => typeof capabilities[key] === 'boolean')
+}
+
+const decoratePayload = (room: RoomInfo, payload: PlaybackPayload): PlaybackPayload => {
 	const sequence = room.nextSequence++
 	return {
 		...payload,
 		sequence,
-		capturedAtMs:
-			typeof payload.capturedAtMs === 'number'
-				? payload.capturedAtMs
-				: typeof payload.tms === 'number'
-				? payload.tms
-				: Date.now(),
 	}
 }
 
@@ -129,7 +142,8 @@ export const createSyncServer = (app: Express = express()): SyncServer => {
 
 		socket.on('media_event', (incoming) => {
 			const room = rooms.get(incoming.roomName)
-			if (!room || socket.id !== room.id || !socket.rooms.has(incoming.roomName)) return
+			if (!room || socket.id !== room.id || !socket.rooms.has(incoming.roomName) ||
+				!isPlaybackEnvelopeV2(incoming.data)) return
 			const event = {
 				roomName: incoming.roomName,
 				data: decoratePayload(room, incoming.data),
@@ -140,7 +154,8 @@ export const createSyncServer = (app: Express = express()): SyncServer => {
 
 		socket.on('stream_change', (incoming) => {
 			const room = rooms.get(incoming.roomName)
-			if (!room || socket.id !== room.id || !socket.rooms.has(incoming.roomName)) return
+			if (!room || socket.id !== room.id || !socket.rooms.has(incoming.roomName) ||
+				!isPlaybackEnvelopeV2(incoming.data)) return
 			const event = {
 				roomName: incoming.roomName,
 				data: decoratePayload(room, incoming.data),

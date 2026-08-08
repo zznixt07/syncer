@@ -1,7 +1,7 @@
 const { after, before, test } = require('node:test')
 const assert = require('node:assert/strict')
 const { io: connect } = require('socket.io-client')
-const { cleanupStaleRooms, createSyncServer } = require('../dist/index.js')
+const { cleanupStaleRooms, createSyncServer, isPlaybackEnvelopeV2 } = require('../dist/index.js')
 
 let syncServer
 let address
@@ -27,6 +27,16 @@ const emitAck = (socket, event, data) =>
 const once = (socket, event) =>
 	new Promise((resolve) => socket.once(event, resolve))
 
+const envelope = (overrides = {}) => ({
+	version: 2,
+	capturedAtMs: 1000,
+	source: { platform: 'desktop', adapter: 'html', service: 'web' },
+	media: { canonicalId: 'fixture:one', url: 'https://fixture.test/one', isLive: false },
+	playback: { state: 'play', positionMs: 12_500, rate: 1 },
+	capabilities: { canPlay: true, canPause: true, canSeek: true, canSetRate: true, canLoadMedia: true },
+	...overrides,
+})
+
 before(async () => {
 	syncServer = createSyncServer()
 	await new Promise((resolve) => syncServer.httpServer.listen(0, '127.0.0.1', resolve))
@@ -39,28 +49,30 @@ after(async () => {
 	await new Promise((resolve) => syncServer.io.close(resolve))
 })
 
-test('stores ordered legacy snapshots and replays them to late joiners', async () => {
+test('validates all required protocol-v2 sections', () => {
+	assert.equal(isPlaybackEnvelopeV2(envelope()), true)
+	assert.equal(isPlaybackEnvelopeV2({ ...envelope(), playback: { state: 'play', rate: 1 } }), false)
+	assert.equal(isPlaybackEnvelopeV2({ ...envelope(), capabilities: { canPlay: true } }), false)
+	assert.equal(isPlaybackEnvelopeV2({ ...envelope(), version: 1 }), false)
+})
+
+test('rejects legacy flat payloads without assigning sequence or storing snapshots', async () => {
 	const host = await openClient()
 	const created = await emitAck(host, 'create_room', { roomName: 'legacy', data: {} })
 	assert.equal(created.success, true)
 
 	const firstGuest = await openClient()
 	await emitAck(firstGuest, 'join_room', { roomName: 'legacy', data: {} })
-	const firstEvent = once(firstGuest, 'media_event')
+	let received = false
+	firstGuest.once('media_event', () => { received = true })
 	host.emit('media_event', {
 		roomName: 'legacy',
 		data: { timestamp: 12.5, tms: 1000, mediaState: 'play', playbackRate: 1 },
 	})
-	const received = await firstEvent
-	assert.equal(received.data.sequence, 1)
-	assert.equal(received.data.capturedAtMs, 1000)
-
-	const lateGuest = await openClient()
-	const replay = once(lateGuest, 'media_event')
-	await emitAck(lateGuest, 'join_room', { roomName: 'legacy', data: {} })
-	const snapshot = await replay
-	assert.equal(snapshot.data.timestamp, 12.5)
-	assert.equal(snapshot.data.sequence, 1)
+	await new Promise((resolve) => setTimeout(resolve, 30))
+	assert.equal(received, false)
+	assert.equal(syncServer.rooms.get('legacy').latestMediaEvent, null)
+	assert.equal(syncServer.rooms.get('legacy').nextSequence, 1)
 })
 
 test('preserves v2 fields, assigns sequence, and replays stream before playback', async () => {
@@ -69,30 +81,24 @@ test('preserves v2 fields, assigns sequence, and replays stream before playback'
 
 	host.emit('stream_change', {
 		roomName: 'v2-room',
-		data: {
-			version: 2,
+		data: envelope({
 			sequence: 999,
 			capturedAtMs: 2000,
 			source: { platform: 'android', adapter: 'media-session' },
 			media: { canonicalId: 'track:1', isLive: false },
 			playback: { state: 'pause', positionMs: 0, rate: 1 },
 			capabilities: { canPlay: true, canPause: true, canSeek: true, canSetRate: false, canLoadMedia: false },
-		},
+		}),
 	})
 	host.emit('media_event', {
 		roomName: 'v2-room',
-		data: {
-			version: 2,
+		data: envelope({
 			capturedAtMs: 2100,
 			source: { platform: 'android', adapter: 'media-session' },
 			media: { canonicalId: 'track:1', isLive: false },
 			playback: { state: 'play', positionMs: 500, rate: 1 },
 			capabilities: { canPlay: true, canPause: true, canSeek: true, canSetRate: false, canLoadMedia: false },
-			timestamp: 0.5,
-			tms: 2100,
-			mediaState: 'play',
-			playbackRate: 1,
-		},
+		}),
 	})
 
 	const guest = await openClient()
@@ -126,7 +132,7 @@ test('rejects guest playback events and supports owner token reclaim', async () 
 
 	guest.emit('media_event', {
 		roomName: 'owned',
-		data: { timestamp: 99, tms: 1, mediaState: 'play' },
+		data: envelope({ playback: { state: 'play', positionMs: 99_000, rate: 1 } }),
 	})
 	await new Promise((resolve) => setTimeout(resolve, 20))
 	assert.equal(syncServer.rooms.get('owned').latestMediaEvent, null)
