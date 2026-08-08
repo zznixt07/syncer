@@ -1,22 +1,72 @@
+export type PlaybackStateName = 'play' | 'pause' | 'buffer' | 'ended'
 
-type TResult = {
-	success: boolean
-	data: any
+export interface MediaIdentity {
+	canonicalId?: string
+	url?: string
+	title?: string
+	artist?: string
+	durationMs?: number
+	isLive: boolean
 }
 
-interface IRoomInfo {
+export interface PlaybackCapabilities {
+	canPlay: boolean
+	canPause: boolean
+	canSeek: boolean
+	canSetRate: boolean
+	canLoadMedia: boolean
+}
+
+export interface PlaybackEnvelopeV2 {
+	version: 2
+	sequence?: number
+	capturedAtMs: number
+	source: {
+		platform: 'desktop' | 'android' | 'ios'
+		adapter: 'html' | 'media-session' | 'youtube' | 'spotify'
+		service?: string
+		applicationId?: string
+	}
+	media: MediaIdentity
+	playback: {
+		state: PlaybackStateName
+		positionMs: number
+		rate: number
+		muted?: boolean
+	}
+	capabilities: PlaybackCapabilities
+	// Legacy fields stay flat so clients older than protocol v2 keep working.
+	timestamp?: number
+	tms?: number
+	mediaState?: PlaybackStateName
+	playbackRate?: number
+	url?: string
+	[key: string]: unknown
+}
+
+export type PlaybackPayload = Record<string, unknown> & {
+	version?: number
+	sequence?: number
+	capturedAtMs?: number
+}
+
+export type TResult = {
+	success: boolean
+	data: Record<string, unknown>
+}
+
+export interface IRoomInfo {
 	roomName: string
 }
 
 export interface IRoomAndData extends IRoomInfo {
-	data: Record<string, any>
+	data: PlaybackPayload
 }
 
-// Used for create_room to support reclamation with ownerToken
-interface ICreateRoomData extends IRoomInfo {
+export interface ICreateRoomData extends IRoomInfo {
 	data?: {
 		ownerToken?: string
-		[key: string]: any
+		[key: string]: unknown
 	}
 }
 
@@ -27,19 +77,17 @@ export interface IJoinRoomData extends IRoomInfo {
 }
 
 export interface ServerToClientEvents {
-	noArg: () => void
-	basicEmit: (a: number, b: string, c: Buffer) => void
-	withAck: (d: string, callback: (e: number) => void) => void
-	list_rooms: (a: (msg: TResult) => void) => void
-	stream_change: (data: any) => void
-	media_event: (data: any) => void
-	sync_room_data: (data: any) => void
+	stream_change: (data: IRoomAndData) => void
+	media_event: (data: IRoomAndData) => void
+	sync_room_data: (data: Record<string, never>) => void
 	room_user_count: (data: { roomName: string; userCount: number }) => void
-	// stream_location: (ack: (data: TResult) => void) => void
 }
 
 export interface ClientToServerEvents {
-	time_sync: (data: Record<any, any>, ack: (msg: {serverTime: number}) => void) => void
+	time_sync: (
+		data: Record<string, unknown>,
+		ack: (msg: { serverTime: number }) => void
+	) => void
 	list_rooms: (ack: (msg: TResult) => void) => void
 	create_room: (data: ICreateRoomData, ack: (msg: TResult) => void) => void
 	join_room: (data: IJoinRoomData, ack: (msg: TResult) => void) => void
@@ -47,7 +95,6 @@ export interface ClientToServerEvents {
 	media_event: (data: IRoomAndData) => void
 	stream_change: (data: IRoomAndData) => void
 	sync_room_data: (data: IRoomInfo) => void
-	// stream_location: (data: IRoomAndData) => void
 }
 
 export interface InterServerEvents {
@@ -55,7 +102,6 @@ export interface InterServerEvents {
 }
 
 export interface SocketData {
-	name: string
-	age: number
-
+	name?: string
+	age?: number
 }

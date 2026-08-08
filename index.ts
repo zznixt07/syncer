@@ -1,35 +1,64 @@
-import { createServer } from 'http'
+import { createServer, Server as HttpServer } from 'http'
 import { Server, Socket } from 'socket.io'
 import express, { Express } from 'express'
 import { randomBytes } from 'crypto'
 import {
 	ClientToServerEvents,
-	IJoinRoomData,
 	InterServerEvents,
 	IRoomAndData,
+	PlaybackPayload,
 	ServerToClientEvents,
 	SocketData,
 } from 'typings/socketio'
 import 'dotenv/config'
-// import path from 'path'
-// import fs from 'fs'
 
-interface RoomInfo {
-	id: string | null // null when owner disconnected
+export interface RoomInfo {
+	id: string | null
 	ownerToken: string
 	disconnectedAt: number | null
+	nextSequence: number
+	latestMediaEvent: IRoomAndData | null
+	latestStreamChange: IRoomAndData | null
 }
-
-// const packageJsonPath = path.join(__dirname, 'package.json')
-// const packageJson = fs.readFileSync(packageJsonPath, 'utf8')
-// const packageJsonData = JSON.parse(packageJson)
-// console.log(`version: ${packageJsonData.version}`)
 
 const MAX_ROOM_AGE_MS = 86400 * 3 * 1000
 
-const app = express()
+export const cleanupStaleRooms = (
+	rooms: Map<string, RoomInfo>,
+	now = Date.now(),
+	maxAgeMs = MAX_ROOM_AGE_MS,
+) => {
+	for (const [roomName, room] of rooms) {
+		if (room.disconnectedAt && now - room.disconnectedAt > maxAgeMs) rooms.delete(roomName)
+	}
+}
 
-const initWebSocket = (app: Express) => {
+export interface SyncServer {
+	httpServer: HttpServer
+	io: Server<
+		ClientToServerEvents,
+		ServerToClientEvents,
+		InterServerEvents,
+		SocketData
+	>
+	rooms: Map<string, RoomInfo>
+}
+
+const decoratePayload = (room: RoomInfo, payload: PlaybackPayload) => {
+	const sequence = room.nextSequence++
+	return {
+		...payload,
+		sequence,
+		capturedAtMs:
+			typeof payload.capturedAtMs === 'number'
+				? payload.capturedAtMs
+				: typeof payload.tms === 'number'
+				? payload.tms
+				: Date.now(),
+	}
+}
+
+export const createSyncServer = (app: Express = express()): SyncServer => {
 	const httpServer = createServer(app)
 	const io = new Server<
 		ClientToServerEvents,
@@ -37,321 +66,192 @@ const initWebSocket = (app: Express) => {
 		InterServerEvents,
 		SocketData
 	>(httpServer, {
-		serveClient: false, // don't serve the static socket.io client file at /socket.io/socket.io.js.
-		cors: {
-			origin: '*',
-		},
+		serveClient: false,
+		cors: { origin: '*' },
 	})
-	// this is a global variable that stores the room name in its key
-	// and the room info (owner socket id, token, disconnection time) in its value
 	const rooms: Map<string, RoomInfo> = new Map()
-	const getRoomUserCount = (roomName: string) => {
-		return io.of('/').adapter.rooms.get(roomName)?.size ?? 0
-	}
+
+	const getRoomUserCount = (roomName: string) =>
+		io.of('/').adapter.rooms.get(roomName)?.size ?? 0
+
 	const notifyRoomUserCount = (roomName: string) => {
 		io.to(roomName).emit('room_user_count', {
 			roomName,
 			userCount: getRoomUserCount(roomName),
 		})
 	}
-	const mediaHandler = (roomName: string, socket: Socket, data: IRoomAndData) => {
-		// there is no ack but an emit, so that the other clients
-		// can receive any event just by listening. an ack would not be
-		// suitable here.
-		// .to() doesnt send to sender, which is the thing preventing this from
-		// going infinite loop.
-		socket.to(roomName).emit('media_event', data)
-	}
+
 	const requestMediaEvent = (ownerSocketId: string) => {
 		io.to(ownerSocketId).emit('sync_room_data', {})
 	}
+
+	const replaySnapshot = (socket: Socket<ClientToServerEvents, ServerToClientEvents>, room: RoomInfo) => {
+		if (room.latestStreamChange) socket.emit('stream_change', room.latestStreamChange)
+		if (room.latestMediaEvent) socket.emit('media_event', room.latestMediaEvent)
+		return !!(room.latestStreamChange || room.latestMediaEvent)
+	}
+
 	io.on('connection', (socket) => {
-		console.log('a user connected')
+		socket.on('time_sync', (_, ack) => ack({ serverTime: Date.now() }))
 
-		socket.on('time_sync', (_, ack) => {
-			const serverTime = Date.now()
-			ack({ serverTime: serverTime })
-		})
 		socket.on('create_room', (roomInfo, ack) => {
-			// if the socket id is connected to other rooms not including itself.
-			// then return.
 			if (io.of('/').adapter.sids.get(socket.id)!.size > 1) {
-				return ack({
-					success: false,
-					data: { message: 'Leave current room first.' },
-				})
+				return ack({ success: false, data: { message: 'Leave current room first.' } })
 			}
-			const roomName = roomInfo.roomName
-			if (roomName.length === 0) {
-				return ack({
-					success: false,
-					data: { message: 'Room name must at least be 1 characters long.' },
-				})
+			const roomName = roomInfo.roomName.trim()
+			if (!roomName) {
+				return ack({ success: false, data: { message: 'Room name must be at least 1 character long.' } })
+			}
+			if (rooms.has(roomName)) {
+				return ack({ success: false, data: { message: 'Room already exists.' } })
 			}
 
-			const existingRoom = rooms.get(roomName)
-			const providedToken = roomInfo.data?.ownerToken
-
-			if (existingRoom) {
-				// Room exists with active owner OR wrong/no token
-				return ack({
-					success: false,
-					data: { message: 'Room already exists.' },
-				})
-			}
-
-			// Create new room with token
-			const newToken = randomBytes(16).toString('hex')
+			const ownerToken = randomBytes(16).toString('hex')
 			socket.join(roomName)
 			rooms.set(roomName, {
 				id: socket.id,
-				ownerToken: newToken,
+				ownerToken,
 				disconnectedAt: null,
+				nextSequence: 1,
+				latestMediaEvent: null,
+				latestStreamChange: null,
 			})
 			ack({
 				success: true,
 				data: {
 					message: 'Room created successfully.',
-					ownerToken: newToken,
+					ownerToken,
 					userCount: getRoomUserCount(roomName),
 				},
 			})
-			console.log('Room created successfully with id', socket.id)
 			notifyRoomUserCount(roomName)
-			
-			// also broadcast to any clients which are in the room. It is possible
-			// to have clients still connected if the owner leaves a room.
-			delete roomInfo.data?.ownerToken
-			mediaHandler(roomName, socket, { roomName: roomName, data: {} })
-		})
-		/* 
-			this listen event is nested inside the create_room event so that
-			only the users that have joined the room can receive the event instead
-			of all the users.
-			DO not use this in join_room cuz it will trip an infinite loop.
-			Hence, cant implement sending events by anyone to everyone in room.
-			No workaround around this yet. need a way to distinguish JS click and real click.
-		*/
-		socket.on('media_event', (data) => {
-			// can either take the room name from the data or invert the rooms map
-			// and use the current socket id to get the room name.
-			// going with first option cuz `simple is better than complex`.
-			if (socket.id === rooms.get(data.roomName)?.id) {
-				mediaHandler(data.roomName, socket, data)
-			}
 		})
 
-		socket.on('stream_change', (newStreamData) => {
-			if (socket.id === rooms.get(newStreamData.roomName)?.id) {
-				socket.to(newStreamData.roomName).emit('stream_change', newStreamData)
+		socket.on('media_event', (incoming) => {
+			const room = rooms.get(incoming.roomName)
+			if (!room || socket.id !== room.id || !socket.rooms.has(incoming.roomName)) return
+			const event = {
+				roomName: incoming.roomName,
+				data: decoratePayload(room, incoming.data),
 			}
+			room.latestMediaEvent = event
+			socket.to(incoming.roomName).emit('media_event', event)
+		})
+
+		socket.on('stream_change', (incoming) => {
+			const room = rooms.get(incoming.roomName)
+			if (!room || socket.id !== room.id || !socket.rooms.has(incoming.roomName)) return
+			const event = {
+				roomName: incoming.roomName,
+				data: decoratePayload(room, incoming.data),
+			}
+			room.latestStreamChange = event
+			socket.to(incoming.roomName).emit('stream_change', event)
 		})
 
 		socket.on('join_room', (targetRoom, ack) => {
 			if (io.of('/').adapter.sids.get(socket.id)!.size > 1) {
-				return ack({
-					success: false,
-					data: {
-						message: 'Leave current room first.',
-					},
-				})
+				return ack({ success: false, data: { message: 'Leave current room first.' } })
 			}
-			const roomName = targetRoom.roomName
-			if (!rooms.has(roomName)) {
-				return ack({
-					success: false,
-					data: { message: 'Room does not exist.' },
-				})
-			} else {
-				if (socket.rooms.has(roomName)) {
-					return ack({
-						success: false,
-						data: { message: 'Room already connected.' },
-					})
-				}
-				const existingRoom = rooms.get(roomName)
-				const providedToken = targetRoom.data.ownerToken
-				const ownerId = rooms.get(roomName)?.id
-				// if (!ownerId) {
-				// 	// TODO: instead of doing this, we do similar logic as in create_room event by passing the token in the socket event data.
-				// 	// this is a temporary solution to avoid the issue of owner not found.
-				// 	// basically, cut and paste the create_room event logic here after implementing it in the frontend extension
-				// 	return ack({
-				// 		success: false,
-				// 		data: { message: 'Room exists but owner not found. (if you are the owner, try creating the room again)' },
-				// 	})
-				// }
-
-				if (existingRoom) {
-					// Room exists — check if it's orphaned and token matches
-					if (
-						// existingRoom.id === null &&
-						providedToken === existingRoom.ownerToken
-					) {
-						// Reclaim ownership
-						existingRoom.id = socket.id
-						existingRoom.disconnectedAt = null
-						socket.join(roomName)
-						ack({
-							success: true,
-							data: {
-								message: 'Room reclaimed.',
-								isOwner: true,
-								userCount: getRoomUserCount(roomName),
-							},
-						})
-						console.log('Room reclaimed successfully with id', socket.id)
-						notifyRoomUserCount(roomName)
-						// Broadcast to any clients still in the room
-						if (ownerId) {
-							requestMediaEvent(ownerId)
-						}
-						
-						return
-					}
-				}
-
-				socket.join(roomName)
-				let isOwner = false
-				if (socket.id === rooms.get(roomName)?.id) {
-					isOwner = true
-				}
-				ack({
-					success: true,
-					data: {
-						isOwner: isOwner,
-						message: 'Room joined successfully.',
-						userCount: getRoomUserCount(roomName),
-					},
-				})
-				notifyRoomUserCount(roomName)
-				/*
-				then, send the current status of room to the joinee.
-				But to do that, we need information from the room creator.
-				hence, emit an event only to the room creator.
-				In response to the event, the room creator will emit the media_event to the server,
-				which will emit the event to *all* the joinee.
-				*/
-				if (ownerId) {
-					requestMediaEvent(ownerId)
-				}
-			}
-		})
-
-		/* socket.on('stream_location', (data) => {
-			if (socket.id === rooms.get(data.roomName)?.id) {
-				socket
-					.to(data.roomName)
-					.emit('stream_location', data)
-			}
-		}) */
-
-		socket.on('sync_room_data', (data) => {
-			const roomName = data.roomName
-			if (!rooms.has(roomName)) {
-				console.log('room does not exist')
-				return
-			}
-			// if (socket.rooms.has(roomName)) {
-			// 	console.log('room is not connected to')
-			// 	return
-			// }
+			const roomName = targetRoom.roomName.trim()
 			const room = rooms.get(roomName)
-			if (room?.id) {
+			if (!room) return ack({ success: false, data: { message: 'Room does not exist.' } })
+			if (socket.rooms.has(roomName)) {
+				return ack({ success: false, data: { message: 'Room already connected.' } })
+			}
+
+			const reclaiming = targetRoom.data?.ownerToken === room.ownerToken
+			if (reclaiming) {
+				room.id = socket.id
+				room.disconnectedAt = null
+			}
+			socket.join(roomName)
+			ack({
+				success: true,
+				data: {
+					message: reclaiming ? 'Room reclaimed.' : 'Room joined successfully.',
+					isOwner: reclaiming,
+					userCount: getRoomUserCount(roomName),
+				},
+			})
+			notifyRoomUserCount(roomName)
+
+			if (reclaiming) {
+				requestMediaEvent(socket.id)
+			} else if (!replaySnapshot(socket, room) && room.id) {
 				requestMediaEvent(room.id)
 			}
 		})
 
+		socket.on('sync_room_data', ({ roomName }) => {
+			const room = rooms.get(roomName)
+			if (room?.id) requestMediaEvent(room.id)
+		})
+
 		socket.on('list_rooms', (ack) => {
 			const roomNames = Array.from(rooms.keys())
-			const roomsWithUserCounts = roomNames.map((roomName) => ({
-				roomName,
-				userCount: getRoomUserCount(roomName),
-				// authoritative: the client can't tell this from a stored token,
-				// since tokens outlive the rooms they were minted for.
-				isOwner: rooms.get(roomName)?.id === socket.id,
-			}))
 			ack({
 				success: true,
-				data: { rooms: roomNames, roomUserCounts: roomsWithUserCounts },
+				data: {
+					rooms: roomNames,
+					roomUserCounts: roomNames.map((roomName) => ({
+						roomName,
+						userCount: getRoomUserCount(roomName),
+						isOwner: rooms.get(roomName)?.id === socket.id,
+					})),
+				},
 			})
 		})
 
-		socket.on('leave_room', (roomInfo, ack) => {
-			const roomName = roomInfo.roomName
-			if (!rooms.has(roomName)) {
-				return ack({
-					success: false,
-					data: { message: 'Room does not exist.' },
-				})
-			}
+		socket.on('leave_room', ({ roomName }, ack) => {
+			const room = rooms.get(roomName)
+			if (!room) return ack({ success: false, data: { message: 'Room does not exist.' } })
 			if (!socket.rooms.has(roomName)) {
 				return ack({ success: false, data: { message: 'Room not connected.' } })
 			}
+			const isOwner = socket.id === room.id
 			socket.leave(roomName)
-			// differentiate betn owner leaving and joinee leaving, to remove
-			// appropriate client side event listeners.
-			let isOwner = false
-			let message = 'Room left successfully.'
-			if (socket.id === rooms.get(roomName)?.id) {
-				isOwner = true
-				console.log('owner left room', roomName)
-				// do not delete room as owner may want to rejoin and still have owner previlages.
-				// i think socket.io automatically handles this.
+			if (isOwner) {
+				room.id = null
+				room.disconnectedAt = Date.now()
 			}
-			const userCount = getRoomUserCount(roomName)
 			ack({
 				success: true,
-				data: { isOwner: isOwner, message: message, userCount: userCount },
+				data: {
+					isOwner,
+					message: 'Room left successfully.',
+					userCount: getRoomUserCount(roomName),
+				},
 			})
 			notifyRoomUserCount(roomName)
 		})
 
 		socket.on('disconnecting', () => {
-			const connectedRoomNames = Array.from(socket.rooms).filter(
-				(roomName) => roomName !== socket.id && rooms.has(roomName)
-			)
-			// Mark rooms as orphaned instead of deleting immediately
-			// This allows the owner to reclaim the room within the timeout period
-			for (const [roomName, roomInfo] of rooms) {
-				if (roomInfo.id === socket.id) {
-					roomInfo.id = null
-					roomInfo.disconnectedAt = Date.now()
-					console.log(
-						`Room "${roomName}" owner disconnected. Room marked as orphaned.`
-					)
-					// dont break; in the case(possible?) of multiple rooms with same owner
+			const connectedRooms = Array.from(socket.rooms).filter((name) => name !== socket.id && rooms.has(name))
+			for (const room of rooms.values()) {
+				if (room.id === socket.id) {
+					room.id = null
+					room.disconnectedAt = Date.now()
 				}
 			}
-			setTimeout(() => {
-				connectedRoomNames.forEach(notifyRoomUserCount)
-			}, 0)
+			setTimeout(() => connectedRooms.forEach(notifyRoomUserCount), 0)
 		})
 	})
 
-	// Periodic cleanup: delete rooms that have been orphaned for more than 1 day
-	setInterval(() => {
-		const now = Date.now()
-		for (const [roomName, roomInfo] of rooms) {
-			if (
-				roomInfo.disconnectedAt &&
-				now - roomInfo.disconnectedAt > MAX_ROOM_AGE_MS
-			) {
-				rooms.delete(roomName)
-				console.log(`Deleted stale room: ${roomName}`)
-			}
-		}
-	}, 60 * 60 * 1000) // Run cleanup every hour
+	const cleanupTimer = setInterval(() => {
+		cleanupStaleRooms(rooms)
+	}, 60 * 60 * 1000)
+	cleanupTimer.unref()
 
-	return httpServer
+	return { httpServer, io, rooms }
 }
 
-const httpServer = initWebSocket(app)
-const PORT = parseInt(process.env.PORT!, 10)
-httpServer.listen(PORT, async () => {
-	console.log(`
-	⚡️[HTTP] server is running at http://[::]:${PORT}
-	🔌[ WS ] server is running at http://[::]:${PORT}
-    `)
-})
-export { app }
+export const app = express()
+
+if (require.main === module) {
+	const { httpServer } = createSyncServer(app)
+	const port = Number.parseInt(process.env.PORT || '3000', 10)
+	httpServer.listen(port, () => {
+		console.log(`Syncer HTTP/WebSocket server listening on port ${port}`)
+	})
+}
