@@ -121,14 +121,30 @@ export const createSyncServer = (app: Express = express()): SyncServer => {
 
 			const ownerToken = randomBytes(16).toString('hex')
 			socket.join(roomName)
-			rooms.set(roomName, {
+			const room: RoomInfo = {
 				id: socket.id,
 				ownerToken,
 				disconnectedAt: null,
 				nextSequence: 1,
 				latestMediaEvent: null,
 				latestStreamChange: null,
-			})
+			}
+			rooms.set(roomName, room)
+
+			// Browser hosts include their current v2 snapshot while creating a
+			// room. Seed replay immediately so the first guest can navigate even
+			// if the host runtime is suspended before a later state request.
+			const { ownerToken: _presentedToken, ...initialPayload } = roomInfo.data ?? {}
+			if (isPlaybackEnvelopeV2(initialPayload)) {
+				room.latestStreamChange = {
+					roomName,
+					data: decoratePayload(room, initialPayload),
+				}
+				room.latestMediaEvent = {
+					roomName,
+					data: decoratePayload(room, initialPayload),
+				}
+			}
 			ack({
 				success: true,
 				data: {

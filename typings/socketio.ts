@@ -53,7 +53,7 @@ export interface IRoomAndData extends IRoomInfo {
 }
 
 export interface ICreateRoomData extends IRoomInfo {
-	data?: {
+	data?: Partial<PlaybackEnvelopeV2> & {
 		ownerToken?: string
 		[key: string]: unknown
 	}

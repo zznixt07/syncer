@@ -56,6 +56,32 @@ test('validates all required protocol-v2 sections', () => {
 	assert.equal(isPlaybackEnvelopeV2({ ...envelope(), version: 1 }), false)
 })
 
+test('seeds stream and playback replay from a browser host create snapshot', async () => {
+	const host = await openClient()
+	const initial = envelope({
+		capturedAtMs: 1500,
+		media: { canonicalId: 'youtube:seed', url: 'https://www.youtube.com/watch?v=seed', isLive: false },
+	})
+	const created = await emitAck(host, 'create_room', {
+		roomName: 'seeded-room',
+		data: { ...initial, ownerToken: 'stale-presented-token' },
+	})
+	assert.equal(created.success, true)
+
+	const guest = await openClient()
+	const order = []
+	guest.on('stream_change', (event) => order.push(['stream', event]))
+	guest.on('media_event', (event) => order.push(['media', event]))
+	await emitAck(guest, 'join_room', { roomName: 'seeded-room', data: {} })
+	await new Promise((resolve) => setTimeout(resolve, 30))
+
+	assert.deepEqual(order.map(([kind]) => kind), ['stream', 'media'])
+	assert.equal(order[0][1].data.media.url, initial.media.url)
+	assert.equal(order[0][1].data.sequence, 1)
+	assert.equal(order[1][1].data.sequence, 2)
+	assert.equal('ownerToken' in order[0][1].data, false)
+})
+
 test('rejects legacy flat payloads without assigning sequence or storing snapshots', async () => {
 	const host = await openClient()
 	const created = await emitAck(host, 'create_room', { roomName: 'legacy', data: {} })
