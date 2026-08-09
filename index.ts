@@ -48,6 +48,8 @@ const PLAYBACK_STATES = new Set(['play', 'pause', 'buffer', 'ended'])
 const PLATFORMS = new Set(['desktop', 'android', 'ios'])
 const ADAPTERS = new Set(['html', 'media-session', 'youtube', 'spotify'])
 
+const normalizeRoomName = (roomName: string) => roomName.trim()
+
 export const isPlaybackEnvelopeV2 = (payload: unknown): payload is PlaybackPayload => {
 	if (!payload || typeof payload !== 'object') return false
 	const data = payload as Record<string, any>
@@ -111,7 +113,7 @@ export const createSyncServer = (app: Express = express()): SyncServer => {
 			if (io.of('/').adapter.sids.get(socket.id)!.size > 1) {
 				return ack({ success: false, data: { message: 'Leave current room first.' } })
 			}
-			const roomName = roomInfo.roomName.trim()
+			const roomName = normalizeRoomName(roomInfo.roomName)
 			if (!roomName) {
 				return ack({ success: false, data: { message: 'Room name must be at least 1 character long.' } })
 			}
@@ -157,34 +159,36 @@ export const createSyncServer = (app: Express = express()): SyncServer => {
 		})
 
 		socket.on('media_event', (incoming) => {
-			const room = rooms.get(incoming.roomName)
-			if (!room || socket.id !== room.id || !socket.rooms.has(incoming.roomName) ||
+			const roomName = normalizeRoomName(incoming.roomName)
+			const room = rooms.get(roomName)
+			if (!room || socket.id !== room.id || !socket.rooms.has(roomName) ||
 				!isPlaybackEnvelopeV2(incoming.data)) return
 			const event = {
-				roomName: incoming.roomName,
+				roomName,
 				data: decoratePayload(room, incoming.data),
 			}
 			room.latestMediaEvent = event
-			socket.to(incoming.roomName).emit('media_event', event)
+			socket.to(roomName).emit('media_event', event)
 		})
 
 		socket.on('stream_change', (incoming) => {
-			const room = rooms.get(incoming.roomName)
-			if (!room || socket.id !== room.id || !socket.rooms.has(incoming.roomName) ||
+			const roomName = normalizeRoomName(incoming.roomName)
+			const room = rooms.get(roomName)
+			if (!room || socket.id !== room.id || !socket.rooms.has(roomName) ||
 				!isPlaybackEnvelopeV2(incoming.data)) return
 			const event = {
-				roomName: incoming.roomName,
+				roomName,
 				data: decoratePayload(room, incoming.data),
 			}
 			room.latestStreamChange = event
-			socket.to(incoming.roomName).emit('stream_change', event)
+			socket.to(roomName).emit('stream_change', event)
 		})
 
 		socket.on('join_room', (targetRoom, ack) => {
 			if (io.of('/').adapter.sids.get(socket.id)!.size > 1) {
 				return ack({ success: false, data: { message: 'Leave current room first.' } })
 			}
-			const roomName = targetRoom.roomName.trim()
+			const roomName = normalizeRoomName(targetRoom.roomName)
 			const room = rooms.get(roomName)
 			if (!room) return ack({ success: false, data: { message: 'Room does not exist.' } })
 			if (socket.rooms.has(roomName)) {
@@ -215,7 +219,7 @@ export const createSyncServer = (app: Express = express()): SyncServer => {
 		})
 
 		socket.on('sync_room_data', ({ roomName }) => {
-			const room = rooms.get(roomName)
+			const room = rooms.get(normalizeRoomName(roomName))
 			if (room?.id) requestMediaEvent(room.id)
 		})
 
@@ -235,6 +239,7 @@ export const createSyncServer = (app: Express = express()): SyncServer => {
 		})
 
 		socket.on('leave_room', ({ roomName }, ack) => {
+			roomName = normalizeRoomName(roomName)
 			const room = rooms.get(roomName)
 			if (!room) return ack({ success: false, data: { message: 'Room does not exist.' } })
 			if (!socket.rooms.has(roomName)) {

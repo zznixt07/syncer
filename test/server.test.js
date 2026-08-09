@@ -173,6 +173,23 @@ test('rejects guest playback events and supports owner token reclaim', async () 
 	assert.equal(syncServer.rooms.get('owned').id, host.id)
 })
 
+test('leaves a whitespace-padded room and can join another room afterward', async () => {
+	const firstHost = await openClient()
+	const secondHost = await openClient()
+	const createdFirst = await emitAck(firstHost, 'create_room', { roomName: '  padded-room  ', data: {} })
+	const createdSecond = await emitAck(secondHost, 'create_room', { roomName: 'next-room', data: {} })
+	assert.equal(createdFirst.success, true)
+	assert.equal(createdSecond.success, true)
+	assert.equal(syncServer.rooms.has('padded-room'), true)
+	assert.equal(syncServer.rooms.has('  padded-room  '), false)
+
+	const left = await emitAck(firstHost, 'leave_room', { roomName: '  padded-room  ' })
+	assert.equal(left.success, true)
+
+	const joined = await emitAck(firstHost, 'join_room', { roomName: 'next-room', data: {} })
+	assert.equal(joined.success, true)
+})
+
 test('lists public rooms with live user counts', async () => {
 	const client = await openClient()
 	const result = await new Promise((resolve) => client.emit('list_rooms', resolve))
