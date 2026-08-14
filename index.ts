@@ -48,7 +48,11 @@ const PLAYBACK_STATES = new Set(['play', 'pause', 'buffer', 'ended'])
 const PLATFORMS = new Set(['desktop', 'android', 'ios'])
 const ADAPTERS = new Set(['html', 'media-session', 'youtube', 'spotify'])
 
-const normalizeRoomName = (roomName: string) => roomName.trim()
+// Socket payloads come from untrusted clients at runtime, regardless of the
+// TypeScript event contract. Treat an absent or non-string room name as an
+// invalid (empty) name instead of allowing it to crash the socket handler.
+const normalizeRoomName = (roomName: unknown): string =>
+	typeof roomName === 'string' ? roomName.trim() : ''
 
 export const isPlaybackEnvelopeV2 = (payload: unknown): payload is PlaybackPayload => {
 	if (!payload || typeof payload !== 'object') return false
