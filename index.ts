@@ -69,6 +69,29 @@ export const isPlaybackEnvelopeV2 = (payload: unknown): payload is PlaybackPaylo
 			.every((key) => typeof capabilities[key] === 'boolean')
 }
 
+/*
+Room state lives in this process's memory, so an uncaught throw in any handler
+does not just drop one packet — pm2 restarts the process and every room, for
+every user, is gone. One malformed emit from one browser must never cost that.
+Handlers are wrapped rather than individually hardened so the guarantee holds
+for handlers added later too.
+*/
+const safeHandler = <A extends unknown[]>(
+	event: string,
+	socket: { id: string },
+	handler: (...args: A) => void,
+) => (...args: A) => {
+	try {
+		handler(...args)
+	} catch (err) {
+		console.error(`[${event}] dropped a packet from ${socket.id}:`, err)
+	}
+}
+
+// A client that sends no callback still reaches the handler, where ack would be
+// undefined. Nothing can be answered, so nothing should be mutated either.
+const hasAck = (ack: unknown): ack is (...args: any[]) => void => typeof ack === 'function'
+
 const decoratePayload = (room: RoomInfo, payload: PlaybackPayload): PlaybackPayload => {
 	const sequence = room.nextSequence++
 	return {
@@ -93,6 +116,11 @@ export const createSyncServer = (app: Express = express()): SyncServer => {
 	const getRoomUserCount = (roomName: string) =>
 		io.of('/').adapter.rooms.get(roomName)?.size ?? 0
 
+	// Every socket is in a room named after itself, so >1 means it has joined
+	// something. Optional because a socket that is mid-disconnect has no entry.
+	const roomCountFor = (socketId: string) =>
+		io.of('/').adapter.sids.get(socketId)?.size ?? 0
+
 	const notifyRoomUserCount = (roomName: string) => {
 		io.to(roomName).emit('room_user_count', {
 			roomName,
@@ -111,13 +139,17 @@ export const createSyncServer = (app: Express = express()): SyncServer => {
 	}
 
 	io.on('connection', (socket) => {
-		socket.on('time_sync', (_, ack) => ack({ serverTime: Date.now() }))
+		socket.on('time_sync', safeHandler('time_sync', socket, (_, ack) => {
+			if (!hasAck(ack)) return
+			ack({ serverTime: Date.now() })
+		}))
 
-		socket.on('create_room', (roomInfo, ack) => {
-			if (io.of('/').adapter.sids.get(socket.id)!.size > 1) {
+		socket.on('create_room', safeHandler('create_room', socket, (roomInfo, ack) => {
+			if (!hasAck(ack)) return
+			if (roomCountFor(socket.id) > 1) {
 				return ack({ success: false, data: { message: 'Leave current room first.' } })
 			}
-			const roomName = normalizeRoomName(roomInfo.roomName)
+			const roomName = normalizeRoomName(roomInfo?.roomName)
 			if (!roomName) {
 				return ack({ success: false, data: { message: 'Room name must be at least 1 character long.' } })
 			}
@@ -140,7 +172,7 @@ export const createSyncServer = (app: Express = express()): SyncServer => {
 			// Browser hosts include their current v2 snapshot while creating a
 			// room. Seed replay immediately so the first guest can navigate even
 			// if the host runtime is suspended before a later state request.
-			const { ownerToken: _presentedToken, ...initialPayload } = roomInfo.data ?? {}
+			const { ownerToken: _presentedToken, ...initialPayload } = roomInfo?.data ?? {}
 			if (isPlaybackEnvelopeV2(initialPayload)) {
 				room.latestStreamChange = {
 					roomName,
@@ -160,46 +192,47 @@ export const createSyncServer = (app: Express = express()): SyncServer => {
 				},
 			})
 			notifyRoomUserCount(roomName)
-		})
+		}))
 
-		socket.on('media_event', (incoming) => {
-			const roomName = normalizeRoomName(incoming.roomName)
+		socket.on('media_event', safeHandler('media_event', socket, (incoming) => {
+			const roomName = normalizeRoomName(incoming?.roomName)
 			const room = rooms.get(roomName)
 			if (!room || socket.id !== room.id || !socket.rooms.has(roomName) ||
-				!isPlaybackEnvelopeV2(incoming.data)) return
+				!isPlaybackEnvelopeV2(incoming?.data)) return
 			const event = {
 				roomName,
 				data: decoratePayload(room, incoming.data),
 			}
 			room.latestMediaEvent = event
 			socket.to(roomName).emit('media_event', event)
-		})
+		}))
 
-		socket.on('stream_change', (incoming) => {
-			const roomName = normalizeRoomName(incoming.roomName)
+		socket.on('stream_change', safeHandler('stream_change', socket, (incoming) => {
+			const roomName = normalizeRoomName(incoming?.roomName)
 			const room = rooms.get(roomName)
 			if (!room || socket.id !== room.id || !socket.rooms.has(roomName) ||
-				!isPlaybackEnvelopeV2(incoming.data)) return
+				!isPlaybackEnvelopeV2(incoming?.data)) return
 			const event = {
 				roomName,
 				data: decoratePayload(room, incoming.data),
 			}
 			room.latestStreamChange = event
 			socket.to(roomName).emit('stream_change', event)
-		})
+		}))
 
-		socket.on('join_room', (targetRoom, ack) => {
-			if (io.of('/').adapter.sids.get(socket.id)!.size > 1) {
+		socket.on('join_room', safeHandler('join_room', socket, (targetRoom, ack) => {
+			if (!hasAck(ack)) return
+			if (roomCountFor(socket.id) > 1) {
 				return ack({ success: false, data: { message: 'Leave current room first.' } })
 			}
-			const roomName = normalizeRoomName(targetRoom.roomName)
+			const roomName = normalizeRoomName(targetRoom?.roomName)
 			const room = rooms.get(roomName)
 			if (!room) return ack({ success: false, data: { message: 'Room does not exist.' } })
 			if (socket.rooms.has(roomName)) {
 				return ack({ success: false, data: { message: 'Room already connected.' } })
 			}
 
-			const reclaiming = targetRoom.data?.ownerToken === room.ownerToken
+			const reclaiming = targetRoom?.data?.ownerToken === room.ownerToken
 			if (reclaiming) {
 				room.id = socket.id
 				room.disconnectedAt = null
@@ -220,14 +253,15 @@ export const createSyncServer = (app: Express = express()): SyncServer => {
 			} else if (!replaySnapshot(socket, room) && room.id) {
 				requestMediaEvent(room.id)
 			}
-		})
+		}))
 
-		socket.on('sync_room_data', ({ roomName }) => {
-			const room = rooms.get(normalizeRoomName(roomName))
+		socket.on('sync_room_data', safeHandler('sync_room_data', socket, (payload) => {
+			const room = rooms.get(normalizeRoomName(payload?.roomName))
 			if (room?.id) requestMediaEvent(room.id)
-		})
+		}))
 
-		socket.on('list_rooms', (ack) => {
+		socket.on('list_rooms', safeHandler('list_rooms', socket, (ack) => {
+			if (!hasAck(ack)) return
 			const roomNames = Array.from(rooms.keys())
 			ack({
 				success: true,
@@ -240,10 +274,11 @@ export const createSyncServer = (app: Express = express()): SyncServer => {
 					})),
 				},
 			})
-		})
+		}))
 
-		socket.on('leave_room', ({ roomName }, ack) => {
-			roomName = normalizeRoomName(roomName)
+		socket.on('leave_room', safeHandler('leave_room', socket, (payload, ack) => {
+			if (!hasAck(ack)) return
+			const roomName = normalizeRoomName(payload?.roomName)
 			const room = rooms.get(roomName)
 			if (!room) return ack({ success: false, data: { message: 'Room does not exist.' } })
 			if (!socket.rooms.has(roomName)) {
@@ -264,9 +299,9 @@ export const createSyncServer = (app: Express = express()): SyncServer => {
 				},
 			})
 			notifyRoomUserCount(roomName)
-		})
+		}))
 
-		socket.on('disconnecting', () => {
+		socket.on('disconnecting', safeHandler('disconnecting', socket, () => {
 			const connectedRooms = Array.from(socket.rooms).filter((name) => name !== socket.id && rooms.has(name))
 			for (const room of rooms.values()) {
 				if (room.id === socket.id) {
@@ -275,7 +310,7 @@ export const createSyncServer = (app: Express = express()): SyncServer => {
 				}
 			}
 			setTimeout(() => connectedRooms.forEach(notifyRoomUserCount), 0)
-		})
+		}))
 	})
 
 	const cleanupTimer = setInterval(() => {
@@ -289,6 +324,19 @@ export const createSyncServer = (app: Express = express()): SyncServer => {
 export const app = express()
 
 if (require.main === module) {
+	/*
+	Letting a process die on an unexpected throw is usually right. Not here:
+	every room lives in this process's memory, so the restart costs every user
+	their session. safeHandler is the real guard; this is what catches whatever
+	it does not cover, and the log line is how we find out about it.
+	*/
+	process.on('uncaughtException', (err) => {
+		console.error('uncaughtException (server kept running):', err)
+	})
+	process.on('unhandledRejection', (err) => {
+		console.error('unhandledRejection (server kept running):', err)
+	})
+
 	const { httpServer } = createSyncServer(app)
 	const port = Number.parseInt(process.env.PORT || '3000', 10)
 	httpServer.listen(port, () => {
