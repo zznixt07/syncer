@@ -98,3 +98,6 @@ dist
 
 # TernJS port file
 .tern-port
+
+# Claude Code local notes (private deployment details)
+CLAUDE.local.md
