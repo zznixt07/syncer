@@ -5,7 +5,7 @@
   "main": "index.js",
   "scripts": {
     "test": "npm run build && node --test test/*.test.js",
-    "dev": "npx nodemon --exec \"node --inspect --require ts-node/register --require dotenv/config index.ts\"",
+    "dev": "npx nodemon --ext ts,json --ignore dist/ --exec \"node --inspect --require ts-node/register --require dotenv/config index.ts\"",
     "build": "tsc",
     "prd": "npm run build && node dist/index.js",
     "heroku_prd": "npm install --production=false && npm run prd"
